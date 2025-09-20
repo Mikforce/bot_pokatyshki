@@ -3,7 +3,7 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, ContextTypes, filters
 from message_analyzer import analyze_message
 
 # Загрузка переменных окружения из .env файла
@@ -33,24 +33,16 @@ if CHAT_IDS_STR:
         logger.error(f"❌ Ошибка парсинга CHAT_IDS: {e}")
         CHAT_IDS = []
 
-logger.info(f"✅ Конфигурация загружена: TG_ID={YOUR_TELEGRAM_ID}, CHAT_IDS={CHAT_IDS}")
-else:
-    CHAT_IDS = []
-    logger.warning("CHAT_IDS не указаны в .env файле")
-
 # Валидация конфигурации
 if not BOT_TOKEN or BOT_TOKEN == 'your_actual_bot_token_here':
-    logger.error("BOT_TOKEN не установлен в .env файле")
+    logger.error("❌ BOT_TOKEN не установлен в .env файле")
     exit(1)
 
 if not YOUR_TELEGRAM_ID:
-    logger.error("YOUR_TELEGRAM_ID не установлен в .env файле")
+    logger.error("❌ YOUR_TELEGRAM_ID не установлен в .env файле")
     exit(1)
 
-if not CHAT_IDS:
-    logger.warning("CHAT_IDS пуст. Бот не будет отслеживать никакие чаты.")
-
-logger.info(f"Конфигурация загружена: TG_ID={YOUR_TELEGRAM_ID}, CHAT_IDS={CHAT_IDS}")
+logger.info(f"✅ Конфигурация загружена: TG_ID={YOUR_TELEGRAM_ID}, CHAT_IDS={CHAT_IDS}")
 
 
 async def send_telegram_alert(context: ContextTypes.DEFAULT_TYPE, alert_text: str):
@@ -61,15 +53,15 @@ async def send_telegram_alert(context: ContextTypes.DEFAULT_TYPE, alert_text: st
             text=alert_text,
             parse_mode='Markdown'
         )
-        logger.info("Уведомление отправлено успешно")
+        logger.info("✅ Уведомление отправлено успешно")
     except Exception as e:
-        logger.error(f"Ошибка отправки уведомления: {e}")
+        logger.error(f"❌ Ошибка отправки уведомления: {e}")
 
 
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Эта функция вызывается на каждое новое сообщение в чате."""
     # Проверяем, из нужного ли нам чата сообщение
-    if update.effective_chat.id not in CHAT_IDS:
+    if CHAT_IDS and update.effective_chat.id not in CHAT_IDS:
         return
 
     # Получаем текст сообщения
@@ -78,7 +70,9 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return  # Игнорируем стикеры, фото и т.д.
 
     user = update.message.from_user
-    logger.info(f"Сообщение от {user.first_name} в чате {update.effective_chat.id}")
+    chat_title = update.effective_chat.title or "Unknown"
+
+    logger.info(f"💬 Сообщение от {user.first_name} в чате '{chat_title}': {message_text[:50]}...")
 
     # Анализируем сообщение нашей ML-моделью
     is_ride_event, confidence = analyze_message(message_text)
@@ -87,42 +81,28 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_ride_event and confidence > 0.7:
         alert_text = (
             f"🚨 *Обнаружено предложение покататься!*\n\n"
-            f"*Чат:* {update.effective_chat.title}\n"
+            f"*Чат:* {chat_title}\n"
             f"*Пользователь:* {user.full_name} (@{user.username})\n"
             f"*Уверенность модели:* {confidence:.2%}\n\n"
             f"*Сообщение:*\n_{message_text}_\n\n"
-            f"[Перейти к сообщению](https://t.me/c/{str(update.effective_chat.id).replace('-100', '')}/{update.message.id})"
+            f"[➡️ Перейти к сообщению](https://t.me/c/{str(update.effective_chat.id).replace('-100', '')}/{update.message.id})"
         )
 
-        logger.warning(f"Обнаружено событие (уверенность: {confidence:.2%})")
+        logger.warning(f"🎯 Обнаружено событие! Уверенность: {confidence:.2%}")
 
         # Отправляем уведомление в Telegram
         await send_telegram_alert(context, alert_text)
 
 
-async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для получения ID чата."""
-    chat_id = update.effective_chat.id
-    chat_title = update.effective_chat.title or "личные сообщения"
-
-    await update.message.reply_text(
-        f"📋 Информация о чате:\n"
-        f"Название: {chat_title}\n"
-        f"ID чата: `{chat_id}`\n"
-        f"Тип: {update.effective_chat.type}",
-        parse_mode='Markdown'
-    )
-    logger.info(f"Запрошен ID чата: {chat_id}")
-
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок."""
+    logger.error(f"❌ Ошибка при обработке update {update}: {context.error}")
 
 
 def main():
-    """Запуск бота."""
+    """Запуск основного бота с NLP."""
     # Создаем Application
     application = Application.builder().token(BOT_TOKEN).build()
-
-    # Добавляем обработчик для команды /chatid
-    application.add_handler(CommandHandler("chatid", get_chat_id))
 
     # Добавляем обработчик для текстовых сообщений в группах/супергруппах
     application.add_handler(MessageHandler(
@@ -130,9 +110,15 @@ def main():
         check_message
     ))
 
+    # Добавляем обработчик ошибок
+    application.add_error_handler(error_handler)
+
     # Запускаем бота
-    logger.info("Бот запущен и начал отслеживание чатов...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("🤖 Основной бот с NLP запущен!")
+    logger.info("📍 Отслеживаемые чаты: %s", CHAT_IDS if CHAT_IDS else "ВСЕ чаты")
+    logger.info("✅ Бот готов к работе и анализу сообщений...")
+
+    application.run_polling()
 
 
 if __name__ == '__main__':
